@@ -144,8 +144,12 @@ int main(int argc,
 
   /* The network initialization of the EIP stack for the NetworkHandler. */
   if (!g_end_stack && kEipStatusOk == NetworkHandlerInitialize() ) {
-
-    (void) executeEventLoop(NULL);
+  set_realtime_priority();
+    struct timespec req = {0, 1000000}; // 1ms
+    while (!g_end_stack) {
+        NetworkHandlerProcessCyclic();
+        nanosleep(&req, NULL); // 精确延时1ms
+    }
 
     /* clean up network state */
     NetworkHandlerFinish();
@@ -180,4 +184,9 @@ static DWORD executeEventLoop(LPVOID thread_arg) {
     }
   }
   return NO_ERROR;
+}
+void set_realtime_priority() {
+    struct sched_param param;
+    param.sched_priority = 60;
+    pthread_setschedparam(pthread_self(), SCHED_RR, &param);
 }

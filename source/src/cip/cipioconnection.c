@@ -6,6 +6,9 @@
 
 #include <string.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <time.h>
 
 #include "cipioconnection.h"
 
@@ -820,93 +823,35 @@ void HandleIoConnectionTimeOut(CipConnectionObject *connection_object) {
   ConnectionObjectSetState(connection_object, kConnectionObjectStateTimedOut);
 }
 
-EipStatus SendConnectedData(CipConnectionObject *connection_object) {
+// 静态变量保存上一次发送的时间戳
+static uint64_t last_send_time = 0;
 
-  /* TODO think of adding an own send buffer to each connection object in order to preset up the whole message on connection opening and just change the variable data items e.g., sequence number */
+uint64_t get_current_time_us() {
+#if defined(__linux__) || defined(__unix__) || defined(__APPLE__)
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+#else
+    // 其他平台可用合适的高精度计时API
+    // 如Windows下QueryPerformanceCounter
+#endif
+}
 
-  CipCommonPacketFormatData *common_packet_format_data =
-    &g_common_packet_format_data_item;
-  /* TODO think on adding a CPF data item to the S_CIP_ConnectionObject in order to remove the code here or even better allocate memory in the connection object for storing the message to send and just change the application data*/
+void SendConnectedData(CipConnectionObject *connection_object) {
+    // ...原有发送逻辑...
 
-  connection_object->eip_level_sequence_count_producing++;
+    // 周期抖动检测
+    uint64_t now = get_current_time_us();
+    if (last_send_time != 0) {
+        uint64_t interval = now - last_send_time;
+        int jitter = (int)interval - (int)connection_object->t_to_o_requested_packet_interval / 1000; // us转ms
+        if (jitter > 3000 || jitter < -3000) { // 超过3ms
+            printf("发送周期抖动超限: %d us\n", (int)jitter);
+        }
+    }
+    last_send_time = now;
 
-  /* assembleCPFData */
-  common_packet_format_data->item_count = 2;
-  if( kConnectionObjectTransportClassTriggerTransportClass0 !=
-      ConnectionObjectGetTransportClassTriggerTransportClass(connection_object) )
-  /* use Sequenced Address Items if not Connection Class 0 */
-  {
-    common_packet_format_data->address_item.type_id =
-      kCipItemIdSequencedAddressItem;
-    common_packet_format_data->address_item.length = 8;
-    common_packet_format_data->address_item.data.sequence_number =
-      connection_object->eip_level_sequence_count_producing;
-  } else {
-    common_packet_format_data->address_item.type_id =
-      kCipItemIdConnectionAddress;
-    common_packet_format_data->address_item.length = 4;
-
-  }
-  common_packet_format_data->address_item.data.connection_identifier =
-    connection_object->cip_produced_connection_id;
-
-  common_packet_format_data->data_item.type_id = kCipItemIdConnectedDataItem;
-
-  CipByteArray *producing_instance_attributes =
-    (CipByteArray *) connection_object->producing_instance->attributes->data;
-  common_packet_format_data->data_item.length = 0;
-
-  /* notify the application that data will be sent immediately after the call */
-  if( BeforeAssemblyDataSend(connection_object->producing_instance) ) {
-    /* the data has changed increase sequence counter */
-    connection_object->sequence_count_producing++;
-  }
-
-  /* set AddressInfo Items to invalid Type */
-  common_packet_format_data->address_info_item[0].type_id = 0;
-  common_packet_format_data->address_info_item[1].type_id = 0;
-
-  ENIPMessage outgoing_message;
-  InitializeENIPMessage(&outgoing_message);
-  AssembleIOMessage(common_packet_format_data, &outgoing_message);
-
-  MoveMessageNOctets(-2, &outgoing_message);
-  common_packet_format_data->data_item.length =
-    producing_instance_attributes->length;
-
-  bool is_heartbeat = (common_packet_format_data->data_item.length == 0);
-  if(s_produce_run_idle && !is_heartbeat) {
-    common_packet_format_data->data_item.length += 4;
-  }
-
-  if( kConnectionObjectTransportClassTriggerTransportClass1 ==
-      ConnectionObjectGetTransportClassTriggerTransportClass(connection_object) )
-  {
-    common_packet_format_data->data_item.length += 2;
-    AddIntToMessage(common_packet_format_data->data_item.length,
-                    &outgoing_message);
-    AddIntToMessage(connection_object->sequence_count_producing,
-                    &outgoing_message);
-  } else {
-    AddIntToMessage(common_packet_format_data->data_item.length,
-                    &outgoing_message);
-  }
-
-  if(s_produce_run_idle && !is_heartbeat) {
-    AddDintToMessage( g_run_idle_state,
-                      &outgoing_message );
-  }
-
-  memcpy(outgoing_message.current_message_position,
-         producing_instance_attributes->data,
-         producing_instance_attributes->length);
-
-  outgoing_message.current_message_position +=
-    producing_instance_attributes->length;
-  outgoing_message.used_message_length += producing_instance_attributes->length;
-
-  return SendUdpData(&connection_object->remote_address,
-                     &outgoing_message);
+    // ...原有发送逻辑...
 }
 
 EipStatus HandleReceivedIoConnectionData(CipConnectionObject *connection_object,
