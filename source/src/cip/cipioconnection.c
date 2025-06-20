@@ -839,7 +839,86 @@ uint64_t get_current_time_us() {
 
 void SendConnectedData(CipConnectionObject *connection_object) {
     // ...原有发送逻辑...
+      /* TODO think of adding an own send buffer to each connection object in order to preset up the whole message on connection opening and just change the variable data items e.g., sequence number */
 
+  CipCommonPacketFormatData *common_packet_format_data =
+    &g_common_packet_format_data_item;
+  /* TODO think on adding a CPF data item to the S_CIP_ConnectionObject in order to remove the code here or even better allocate memory in the connection object for storing the message to send and just change the application data*/
+
+  connection_object->eip_level_sequence_count_producing++;
+
+  /* assembleCPFData */
+  common_packet_format_data->item_count = 2;
+  if( kConnectionObjectTransportClassTriggerTransportClass0 !=
+      ConnectionObjectGetTransportClassTriggerTransportClass(connection_object) )
+  /* use Sequenced Address Items if not Connection Class 0 */
+  {
+    common_packet_format_data->address_item.type_id =
+      kCipItemIdSequencedAddressItem;
+    common_packet_format_data->address_item.length = 8;
+    common_packet_format_data->address_item.data.sequence_number =
+      connection_object->eip_level_sequence_count_producing;
+  } else {
+    common_packet_format_data->address_item.type_id =
+      kCipItemIdConnectionAddress;
+    common_packet_format_data->address_item.length = 4;
+
+  }
+  common_packet_format_data->address_item.data.connection_identifier =
+    connection_object->cip_produced_connection_id;
+
+  common_packet_format_data->data_item.type_id = kCipItemIdConnectedDataItem;
+
+  CipByteArray *producing_instance_attributes =
+    (CipByteArray *) connection_object->producing_instance->attributes->data;
+  common_packet_format_data->data_item.length = 0;
+
+  /* notify the application that data will be sent immediately after the call */
+  if( BeforeAssemblyDataSend(connection_object->producing_instance) ) {
+    /* the data has changed increase sequence counter */
+    connection_object->sequence_count_producing++;
+  }
+
+  /* set AddressInfo Items to invalid Type */
+  common_packet_format_data->address_info_item[0].type_id = 0;
+  common_packet_format_data->address_info_item[1].type_id = 0;
+
+  ENIPMessage outgoing_message;
+  InitializeENIPMessage(&outgoing_message);
+  AssembleIOMessage(common_packet_format_data, &outgoing_message);
+
+  MoveMessageNOctets(-2, &outgoing_message);
+  common_packet_format_data->data_item.length =
+    producing_instance_attributes->length;
+
+  bool is_heartbeat = (common_packet_format_data->data_item.length == 0);
+  if(s_produce_run_idle && !is_heartbeat) {
+    common_packet_format_data->data_item.length += 4;
+  }
+
+  if( kConnectionObjectTransportClassTriggerTransportClass1 ==
+      ConnectionObjectGetTransportClassTriggerTransportClass(connection_object) )
+  {
+    common_packet_format_data->data_item.length += 2;
+    AddIntToMessage(common_packet_format_data->data_item.length,
+                    &outgoing_message);
+    AddIntToMessage(connection_object->sequence_count_producing,
+                    &outgoing_message);
+  } else {
+    AddIntToMessage(common_packet_format_data->data_item.length,
+                    &outgoing_message);
+  }
+
+  if(s_produce_run_idle && !is_heartbeat) {
+    AddDintToMessage( g_run_idle_state,
+                      &outgoing_message );
+  }
+   memcpy(outgoing_message.current_message_position,
+         producing_instance_attributes->data,
+         producing_instance_attributes->length);
+  outgoing_message.current_message_position +=
+    producing_instance_attributes->length;
+  outgoing_message.used_message_length += producing_instance_attributes->length;
     // 周期抖动检测
     uint64_t now = get_current_time_us();
     if (last_send_time != 0) {
@@ -852,6 +931,8 @@ void SendConnectedData(CipConnectionObject *connection_object) {
     last_send_time = now;
 
     // ...原有发送逻辑...
+    return SendUdpData(&connection_object->remote_address,
+                     &outgoing_message);
 }
 
 EipStatus HandleReceivedIoConnectionData(CipConnectionObject *connection_object,
